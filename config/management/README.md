@@ -67,3 +67,104 @@ While this is compiled as a single binary it provides several different faciliti
   storage -- leveraging the identity tool.
 * Converting a genesis configuration and a secure storage into a genesis.blob /
   genesis waypoint.
+
+## The Process
+
+The end-to-end process assumes that each participant has their own Vault
+solution and a token stored locally on their disk in a file accessible to the
+management tool.
+
+In addition, the association will provide a GitHub repository (and owner) along
+with a distinct namespace for each participant. GitHub namespaces equate to
+directories within the repository.
+
+Each participant must retrieve an appropriate GitHub
+[token](https://github.com/settings/tokens) for their account that allows
+access to the `repo` scope. This token must be stored locally on their disk in
+a file accessible to the management tool.
+
+Finally, each participant should initialize their respective key:
+`association`, `owner`, or `operator` in a secure storage solution. How this is
+done is outside the scope of this document.
+
+The remainder of this section specifies distinct behaviors for each role.
+
+### The Association
+
+* The association will publish a layout containing the distinct names and roles
+  of the participants, this is placed into a common namespace:
+```
+cargo run -p libra-management -- \
+    set-layout \
+    --path PATH_TO_LAYOUT \
+    --backend 'backend=github;owner=OWNER;repostiory=REPOSITORY;token=PATH_TO_GITHUB_TOKEN;namespace=common'
+```
+* Each Member of the Association will upload their key to GitHub:
+```
+cargo run -p libra-management -- \
+    association-key \
+    --local 'backend=vault;server=URL;token=PATH_TO_VAULT_TOKEN' \
+    --remote 'backend=github;owner=OWNER;repostiory=REPOSITORY;token=PATH_TO_GITHUB_TOKEN;namespace=NAME'
+```
+
+### Validator Owners
+
+* Each Validator Owner member will upload their key to GitHub:
+```
+cargo run -p libra-management -- \
+    owner-key \
+    --local 'backend=vault;server=URL;token=PATH_TO_VAULT_TOKEN' \
+    --remote 'backend=github;owner=OWNER;repostiory=REPOSITORY;token=PATH_TO_GITHUB_TOKEN;namespace=NAME'
+```
+
+### Validator Operators
+
+* Each Validator Operator member will upload their key to GitHub:
+```
+cargo run -p libra-management -- \
+    operator-key \
+    --local 'backend=vault;server=URL;token=PATH_TO_VAULT_TOKEN' \
+    --remote 'backend=github;owner=OWNER;repostiory=REPOSITORY;token=PATH_TO_GITHUB_TOKEN;namespace=NAME'
+```
+* For each, validator managed by an operator, the operator will upload a signed
+  validator-config. The namespace in GitHub correlates to the owner namspace
+  (note: the owner address is irrelevant in this run):
+```
+cargo run -p libra-management -- \
+    validator-config \
+    --owner-address 00000000000000000000000000000000 \
+    --validator-address '/dns/DNS/tcp/PORT' \
+    --fullnode-address '/dns/DNS/tcp/PORT' \
+    --local 'backend=vault;server=URL;token=PATH_TO_VAULT_TOKEN' \
+    --remote 'backend=github;owner=OWNER;repostiory=REPOSITORY;token=PATH_TO_GITHUB_TOKEN;namespace=NAME'
+```
+* Upon receiving signal from the association, validator operators can now build
+  genesis, this requires no namespace:
+```
+cargo run -p libra-management -- \
+    genesis \
+    --path PATH_TO_LAYOUT \
+    --backend 'backend=github;owner=OWNER;repostiory=REPOSITORY;token=PATH_TO_GITHUB_TOKEN'
+```
+* Upon receiving signal from the association, validator operators can now build
+  a genesis waypoint, this requires no namespace.  In this command, the remote
+  store is the destination where the waypoint will be saved. It is derived from
+  data in the local backend:
+```
+cargo run -p libra-management -- \
+    create-waypoint \
+    --local 'backend=github;owner=OWNER;repostiory=REPOSITORY;token=PATH_TO_GITHUB_TOKEN' \
+    --remote 'backend=vault;server=URL;token=PATH_TO_VAULT_TOKEN'
+```
+* Perform a verify that ensures the local store maps to Genesis and Genesis maps
+  to the waypoint. (TBD)
+
+### Important Notes
+
+* A namespace in Vault is represented as a subdirectory for secrets and a
+  prefix followed by `__` for transit, e.g., `namespace__`.
+* A namespace in GitHub is represented by a subdirectory
+* The GitHub owner repository translate into
+  `https://github.org/OWNER/REPOSITORY`
+* The owner-address is intentionally set as all 0s as it is unused at this
+  point in time.

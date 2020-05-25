@@ -7,7 +7,6 @@ use crate::{cluster::Cluster, instance::Instance};
 use std::{
     fmt, slice,
     sync::Arc,
-    thread,
     time::{Duration, Instant},
 };
 
@@ -32,16 +31,15 @@ use rand::{
     seq::{IteratorRandom, SliceRandom},
     Rng, SeedableRng,
 };
-use tokio::runtime::{Handle, Runtime};
+use tokio::runtime::Handle;
 
-use futures::future::FutureExt;
+use futures::future::{try_join_all, FutureExt};
 use libra_json_rpc_client::JsonRpcAsyncClient;
 use libra_types::transaction::SignedTransaction;
-use reqwest::{Client, Url};
+use reqwest::Client;
 use std::{
     cmp::{max, min},
     ops::Sub,
-    str::FromStr,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::{task::JoinHandle, time};
@@ -260,7 +258,8 @@ impl TxEmitter {
             &mut faucet_account,
             vec![mint_txn],
         )
-        .await?;
+        .await
+        .map_err(|e| format_err!("Failed to mint into faucet account: {}", e))?;
         let libra_per_seed =
             (LIBRA_PER_NEW_ACCOUNT * num_accounts as u64) / req.instances.len() as u64;
         // Create seed accounts with which we can create actual accounts concurrently
@@ -274,38 +273,29 @@ impl TxEmitter {
         .await
         .map_err(|e| format_err!("Failed to mint seed_accounts: {}", e))?;
         info!("Completed minting seed accounts");
-        // For each seed account, create a thread and transfer libra from that seed account to new accounts
-        self.accounts = seed_accounts
+        // For each seed account, create a future and transfer libra from that seed account to new accounts
+        let account_futures = seed_accounts
             .into_iter()
             .enumerate()
-            .map(|(i, mut seed_account)| {
+            .map(|(i, seed_account)| {
                 // Spawn new threads
                 let instance = req.instances[i].clone();
                 let num_new_accounts = num_accounts / req.instances.len();
                 let client = self.make_client(&instance);
-                thread::spawn(move || {
-                    let mut rt = Runtime::new().unwrap();
-                    rt.block_on(create_new_accounts(
-                        &mut seed_account,
-                        num_new_accounts,
-                        LIBRA_PER_NEW_ACCOUNT,
-                        20,
-                        client,
-                    ))
-                })
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .fold(vec![], |mut accumulator, join_handle| {
-                // Join threads and accumulate results
-                accumulator.extend(
-                    join_handle
-                        .join()
-                        .expect("Failed to join thread")
-                        .expect("Failed to mint accounts"),
-                );
-                accumulator
+                create_new_accounts(
+                    seed_account,
+                    num_new_accounts,
+                    LIBRA_PER_NEW_ACCOUNT,
+                    20,
+                    client,
+                )
             });
+        self.accounts = try_join_all(account_futures)
+            .await
+            .map_err(|e| format_err!("Failed to mint accounts {}", e))?
+            .into_iter()
+            .flatten()
+            .collect();
         info!("Mint is done");
         Ok(())
     }
@@ -327,11 +317,7 @@ impl TxEmitter {
     }
 
     fn make_client(&self, instance: &Instance) -> JsonRpcAsyncClient {
-        JsonRpcAsyncClient::new_with_client(
-            self.http_client.clone(),
-            Url::from_str(format!("http://{}:{}", instance.ip(), instance.ac_port()).as_str())
-                .expect("Invalid URL."),
-        )
+        JsonRpcAsyncClient::new_with_client(self.http_client.clone(), instance.json_rpc_url())
     }
 
     pub async fn emit_txn_for(
@@ -550,8 +536,7 @@ fn gen_mint_request(faucet_account: &mut AccountData, num_coins: u64) -> SignedT
     let receiver = faucet_account.address;
     let auth_key_prefix = faucet_account.auth_key_prefix();
     gen_submit_transaction_request(
-        transaction_builder::encode_mint_script(
-            lbr_type_tag(),
+        transaction_builder::encode_mint_lbr_to_address_script(
             &receiver,
             auth_key_prefix,
             num_coins,
@@ -586,8 +571,7 @@ fn gen_mint_txn_request(
     num_coins: u64,
 ) -> SignedTransaction {
     gen_submit_transaction_request(
-        transaction_builder::encode_mint_script(
-            lbr_type_tag(),
+        transaction_builder::encode_mint_lbr_to_address_script(
             receiver,
             receiver_auth_key_prefix,
             num_coins,
@@ -690,7 +674,7 @@ async fn execute_and_wait_transactions(
 /// Create `num_new_accounts` by transferring libra from `source_account`. Return Vec of created
 /// accounts
 async fn create_new_accounts(
-    source_account: &mut AccountData,
+    mut source_account: AccountData,
     num_new_accounts: usize,
     libra_per_new_account: u64,
     max_num_accounts_per_batch: u64,
@@ -703,8 +687,9 @@ async fn create_new_accounts(
             max_num_accounts_per_batch as usize,
             min(MAX_TXN_BATCH_SIZE, num_new_accounts - i),
         ));
-        let requests = gen_transfer_txn_requests(source_account, &batch, libra_per_new_account);
-        execute_and_wait_transactions(&mut client, source_account, requests).await?;
+        let requests =
+            gen_transfer_txn_requests(&mut source_account, &batch, libra_per_new_account);
+        execute_and_wait_transactions(&mut client, &mut source_account, requests).await?;
         i += batch.len();
         accounts.append(&mut batch);
     }

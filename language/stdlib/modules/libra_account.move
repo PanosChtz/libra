@@ -8,6 +8,7 @@ module LibraAccount {
     use 0x0::Empty;
     use 0x0::Event;
     use 0x0::Hash;
+    use 0x0::LBR;
     use 0x0::LCS;
     use 0x0::Libra;
     use 0x0::LibraTransactionTimeout;
@@ -82,9 +83,28 @@ module LibraAccount {
     // A privilege to allow the freezing of accounts.
     struct FreezingPrivilege { }
 
+    // Message for freeze account events
+    struct FreezeAccountEvent {
+        // The address that initiated freeze txn
+        initiator_address: address,
+        // The address that was frozen
+        frozen_address: address,
+    }
+
+
+    // Message for freeze account events
+    struct UnfreezeAccountEvent {
+        // The address that initiated unfreeze txn
+        initiator_address: address,
+        // The address that was unfrozen
+        unfrozen_address: address,
+    }
+
     resource struct AccountOperationsCapability {
         tracking_cap: AccountTrack::CallingCapability,
         event_creation_cap: Event::EventHandleGeneratorCreationCapability,
+        freeze_event_handle: Event::EventHandle<FreezeAccountEvent>,
+        unfreeze_event_handle: Event::EventHandle<UnfreezeAccountEvent>,
     }
 
     public fun initialize() {
@@ -92,6 +112,8 @@ module LibraAccount {
         move_to_sender(AccountOperationsCapability {
             tracking_cap: AccountTrack::grant_calling_capability(),
             event_creation_cap: Event::grant_event_handle_creation_operation(),
+            freeze_event_handle: Event::new_event_handle<FreezeAccountEvent>(),
+            unfreeze_event_handle: Event::new_event_handle<UnfreezeAccountEvent>(),
         });
     }
 
@@ -219,16 +241,26 @@ module LibraAccount {
         );
     }
 
-    // mint_to_address can only be called by accounts with MintCapability (see Libra)
-    // and those accounts will be charged for gas. If those accounts don't have enough gas to pay
-    // for the transaction cost they will fail minting.
-    // However those account can also mint to themselves so that is a decent workaround
+    // Create `amount` coins of type `Token` and send them to `payee`.
+    // `mint_to_address` can only be called by accounts with Libra::MintCapability<Token> and with
+    // Token=Coin1 or Token=Coin2. `mint_lbr_to_address` should be used for minting LBR
     public fun mint_to_address<Token>(
         payee: address,
         amount: u64
     ) acquires T, Balance, AccountOperationsCapability {
         // Mint and deposit the coin
         deposit(payee, Libra::mint<Token>(amount));
+    }
+
+    // Create `amount` LBR and send them to `payee`.
+    // `mint_lbr_to_address` can only be called by accounts with Libra::MintCapability<Coin1> and
+    // Libra::MintCapability<Coin2>
+    public fun mint_lbr_to_address(
+        payee: address,
+        amount: u64
+    ) acquires T, Balance, AccountOperationsCapability {
+        // Mint and deposit the coin
+        deposit(payee, LBR::mint(amount));
     }
 
     // Cancel the oldest burn request from `preburn_address` and return the funds.
@@ -463,6 +495,9 @@ module LibraAccount {
         addr: address,
     );
 
+    native fun create_signer(addr: address): signer;
+    native fun destroy_signer(addr: address): signer;
+
     // Helper to return the u64 value of the `balance` for `account`
     fun balance_for<Token>(balance: &Balance<Token>): u64 {
         Libra::value<Token>(&balance.coin)
@@ -529,18 +564,32 @@ module LibraAccount {
 
     // Freeze the account at `addr`.
     public fun freeze_account(addr: address)
-    acquires T {
+    acquires T, AccountOperationsCapability {
         assert_can_freeze(Transaction::sender());
         // The root association account cannot be frozen
         Transaction::assert(addr != Association::root_address(), 14);
         borrow_global_mut<T>(addr).is_frozen = true;
+        Event::emit_event<FreezeAccountEvent>(
+            &mut borrow_global_mut<AccountOperationsCapability>(0xA550C18).freeze_event_handle,
+            FreezeAccountEvent {
+                initiator_address: Transaction::sender(),
+                frozen_address: addr
+            },
+        );
     }
 
     // Unfreeze the account at `addr`.
     public fun unfreeze_account(addr: address)
-    acquires T {
+    acquires T, AccountOperationsCapability {
         assert_can_freeze(Transaction::sender());
         borrow_global_mut<T>(addr).is_frozen = false;
+        Event::emit_event<UnfreezeAccountEvent>(
+            &mut borrow_global_mut<AccountOperationsCapability>(0xA550C18).unfreeze_event_handle,
+            UnfreezeAccountEvent {
+                initiator_address: Transaction::sender(),
+                unfrozen_address: addr
+            },
+        );
     }
 
     // Returns if the account at `addr` is frozen.

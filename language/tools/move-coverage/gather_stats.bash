@@ -18,19 +18,20 @@ popd || exit 1
 
 echo "Running e2e testsuite..."
 pushd ../../e2e-tests || exit 1
-cargo test
+cargo test -- --skip account_universe
 popd || exit 1
 
 echo "Running Move testsuite..."
 pushd ../../move-lang || exit 1
 cargo test
-cargo run --bin move-build -- -f ../stdlib/modules/* -m
+cargo run --bin move-build -- ../stdlib/modules -m
 popd || exit 1
 
 echo "Converting trace file..."
 cargo run --bin move-trace-conversion -- -f "$TRACE_PATH" -o trace.mvcov
 echo "Producing coverage summaries..."
-cargo run --bin coverage-summaries -- -t trace.mvcov -s ../../stdlib/staged/stdlib.mv -c -o new_coverage_summary.csv
+cargo run --bin coverage-summaries -- -t trace.mvcov -s ../../stdlib/staged/stdlib.mv -o "$1"
+cat ./baseline/coverage_report > "$2"
 
 unset MOVE_VM_TRACE
 

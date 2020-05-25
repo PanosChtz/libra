@@ -82,6 +82,7 @@ function {:constructor} AddressType() : TypeValue;
 function {:constructor} StrType() : TypeValue;
 function {:constructor} VectorType(t: TypeValue) : TypeValue;
 function {:constructor} StructType(name: TypeName, ps: TypeValueArray, ts: TypeValueArray) : TypeValue;
+function {:constructor} $TypeType(): TypeValue;
 function {:constructor} ErrorType() : TypeValue;
 const DefaultTypeValue: TypeValue;
 axiom DefaultTypeValue == ErrorType();
@@ -111,6 +112,7 @@ function {:constructor} Integer(i: int): Value;
 function {:constructor} Address(a: int): Value;
 function {:constructor} Vector(v: ValueArray): Value; // used to both represent move Struct and Vector
 function {:constructor} $Range(lb: Value, ub: Value): Value;
+function {:constructor} $Type(t: TypeValue): Value;
 function {:constructor} Error(): Value;
 const DefaultValue: Value;
 axiom DefaultValue == Error();
@@ -1120,6 +1122,17 @@ procedure {:inline 1} $Event_write_to_event_store(ta: TypeValue, guid: Value, co
     // This function is modeled as a no-op because the actual side effect of this native function is not observable from the Move side.
 }
 
+// ==================================================================================
+// Native signer
+
+procedure {:inline 1} $Signer_borrow_address(signer: Value) returns (res: Value)
+    {{type_requires}} is#Address(signer);
+{
+    // A signer is currently identical to an address.
+    res := signer;
+}
+
+// TODO: implement the below methods
 // ==================================================================================
 // Native signature
 
